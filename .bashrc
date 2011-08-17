@@ -4,18 +4,20 @@ mkdir -p ~/.r/bin
 mkdir -p ~/.r/config
 
 
-# shell nickname -- should happen early, because we may re-exec the shell
+# shell nickname -- should happen early, because we may re-exec
 #
 # This enables a project-based shell experience: each shell has a single
-# currently-active project, with its own working directory stack, gvim session,
-# etc.
+# currently-active project, with its own working directory stack, gvim
+# session, etc.
 function create_project_name() {
     if [ -f ~/.r/usr/share/dict/fake-nouns ]; then
         grep -Ev '[^a-z]' < ~/.r/usr/share/dict/fake-nouns \
             | head -n$$ | tail -n1
     elif [ -f /usr/share/dict/words ]; then
         grep -Ev '[^a-z]' < /usr/share/dict/words \
-            | grep -Ev '.........' | grep -E '....' | head -n$$ | tail -n1
+            | grep -Ev '^.{4,9}$' \
+            | head -n$$ \
+            | tail -n1
     else
         echo $$
     fi
@@ -28,10 +30,17 @@ function set_project() {
         SHELL_NICK="$(create_project_name)"
     fi
     echo "$SHELL_NICK" > ~/.r/config/last-project
-    pwd > ~/.r/config/lwd."$SHELL_NICK"
+    if [ -f ~/.r/config/lwd."$SHELL_NICK" ]; then
+        command cd "$(cat ~/.r/config/lwd."$SHELL_NICK")"
+    else
+        pwd > ~/.r/config/lwd."$SHELL_NICK"
+    fi
     # Reload the shell to load the history
+    #
+    # Note: badness in the case of quoting, but no better way :-/
     HISTFILE=~/.r/config/history."$SHELL_NICK" \
-        exec $(ps -o comm= $$ | sed -e 's/^-\([a-z0-9\/A-Z.-_]*\)/\1 -l /')
+        exec $(ps -o comm= $$ \
+             | sed -e 's:^-\([-a-z0-9\/A-Z._]*\):\1 -l :')
 }
 
 if [ -n "$SHELL_NICK" ]; then
@@ -46,59 +55,6 @@ if [ ~/.r/config/history."$SHELL_NICK" \!= "$HISTFILE" ]; then
     set_project "$SHELL_NICK"
 fi
 
-
-# set curl aliases first
-if ! type -t curl-s >/dev/null; then
-    if type -t curl >/dev/null; then
-        alias curl-s="curl -s"
-    elif type -t wget >/dev/null; then
-        alias curl-s="wget -qO-"
-    fi
-fi
-
-if ! type -t curl-st >/dev/null; then
-    if type -t curl >/dev/null; then
-        alias curl-st="curl -s --max-time"
-    elif type -t wget >/dev/null; then
-        alias curl-st="wget -qO- -T"
-    fi
-fi
-
-# try to update, if possible
-function update_dotfiles() {
-    local DOTFILES=$(curl-s http://xn13.com/config/.dotfiles)
-    for i in $DOTFILES; do
-        echo "Retrieving $i..."
-        if ! curl-s http://xn13.com/config/$i > ~/.r/tmp/$i; then
-            echo "Failed; aborting"
-            return 1
-        fi
-    done
-
-    for i in $DOTFILES; do
-        if [ -f ~/$i ]; then
-            cp ~/$i ~/.r/tmp/$i.backup
-        fi
-
-        mv ~/.r/tmp/$i ~/$i
-    done
-
-    touch ~/.dotcheck
-
-    exec $(ps -o comm= $$ | sed -e 's/^-/-l /')
-}
-
-if type -t curl-st >/dev/null; then
-    if [ -z $(find ~/.dotcheck ! -mtime +1) ]; then
-        if [ $(cat ~/.dotversion 2>/dev/null || echo 0) \
-             -lt "$(curl-st 5 http://xn13.com/config/.dotversion \
-                       || echo 0)" ]; then
-            update_dotfiles
-        fi
-
-        touch ~/.dotcheck
-    fi
-fi
 
 # shell opts
 shopt -s checkwinsize
@@ -268,7 +224,9 @@ fi
 
 # _term_ls -- used by ls() and cd()
 if ls -d --color=auto . 2>/dev/null >/dev/null; then # GNU ls
-    function _term_ls() { command ls -F --color=always -w$COLUMNS "$@"; }
+    function _term_ls() {
+        command ls -F --color=always -w$COLUMNS "$@"
+    }
 elif ls -d -G . 2>/dev/null >/dev/null; then # BSD ls
     function _term_ls() {
         CLICOLOR_FORCE=y LSCOLORS=Gxfxcxdxbxegedabagacad \
@@ -281,9 +239,9 @@ fi
 # ls -- with color and flags iff output is a terminal
 function ls() {
     if isatty; then
-        # Automatically "less" any single ls'ed regular file or symlink to a
-        # regular file, if no options are passed to ls.  Suppress this by
-        # passing -d to ls.
+        # Automatically "less" any single ls'ed regular file or symlink
+        # to a regular file, if no options are passed to ls.  Suppress
+        # this by passing -d to ls.
         if [ $# -eq 1 -a -f "$1" ]; then
             less "$@"
         else
@@ -299,7 +257,7 @@ if echo foo | grep --color=auto foo 2>/dev/null >/dev/null; then
     alias grep='grep --color=auto'
 fi
 
-# cd -- deep changes
+# cd -- change everything
 #
 # automatically ls | head when changing directory
 # cd -E applies a regex to the current directory
@@ -431,8 +389,8 @@ function _prompt() {
         PROMPTWD=$(echo $PROMPTWD | sed -e 's:/\([^/]\)[^/]\+/:/\1/:')
     done
 
-    local title="$(pwd | sed -e 's:.*/::') ($PROMPT_HOST:$(pwd | \
-                                                        sed -e 's:/[^/]*$::'))"
+    local title="$(pwd | sed -e 's:.*/::'
+        ) ($PROMPT_HOST:$(pwd | sed -e 's:/[^/]*$::'))"
     # Set title, given right kind of terminal
     case $TERM in
         xterm*)
@@ -463,16 +421,23 @@ fi
 
 # this is in a function to avoid leaking a bunch of variables
 function _prompt_string() {
-    local HASH=$(echo $PROMPT_HOST | md5sum | sed -e 's/ .*$//' | tr a-z A-Z)
+    local HASH=$(echo $PROMPT_HOST \
+               | md5sum \
+               | sed -e 's/ .*$//; y/abcdef/ABCDEF/')
 
     # Z=default color, N=shell_nick color, S=separator color
     local Z=""
     local N=""
-    if   [ '33333333333333333333333333333333' \> "$HASH" ]; then Z=31; N=33
-    elif [ '66666666666666666666666666666666' \> "$HASH" ]; then Z=32; N=35
-    elif [ '99999999999999999999999999999999' \> "$HASH" ]; then Z=33; N=36
-    elif [ 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC' \> "$HASH" ]; then Z=35; N=31
-    else                                                         Z=36; N=32
+    if   [ '33333333333333333333333333333333' \> "$HASH" ]; then
+        Z=31; N=33
+    elif [ '66666666666666666666666666666666' \> "$HASH" ]; then
+        Z=32; N=35
+    elif [ '99999999999999999999999999999999' \> "$HASH" ]; then
+        Z=33; N=36
+    elif [ 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC' \> "$HASH" ]; then
+        Z=35; N=31
+    else
+        Z=36; N=32
     fi
     local S="$Z;1"
 
@@ -516,17 +481,18 @@ function _hook_exec() {
 
     local command=$(history 1 | sed -e 's/^ *[0-9]* *//');
 
-    # Doing this in the foreground because, empirically, it's fast enough, and
-    # doing it in the background results in a '[Done]' notification from the
-    # shell before every command.
+    # Doing this in the foreground because, empirically, it's fast
+    # enough, and doing it in the background results in a '[Done]'
+    # notification from the shell before every command.
     sqlite3 ~/.r/config/history.db <<END_SQL 2>/dev/null >/dev/null
     CREATE TABLE IF NOT EXISTS history (command, time, project, cwd);
     ALTER TABLE history ADD COLUMN pid;
-    INSERT INTO history VALUES ('$(echo "$command" | sed -e "s/'/''/g")',
-                                $(date +%s),
-                                '$(echo "$SHELL_NICK" | sed -e "s/'/''/g")',
-                                '$(pwd | sed -e "s/'/''/g")',
-                                $$);
+    INSERT INTO history VALUES (
+        '$(echo "$command" | sed -e "s/'/''/g")',
+        $(date +%s),
+        '$(echo "$SHELL_NICK" | sed -e "s/'/''/g")',
+        '$(pwd | sed -e "s/'/''/g")',
+        $$);
 END_SQL
 
     if isatty; then
