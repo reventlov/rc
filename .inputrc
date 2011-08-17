@@ -1,0 +1,10 @@
+$include /etc/inputrc
+set bell-style none
+"\M-[A": history-search-backward
+"\M-[B": history-search-forward
+"\e[A": history-search-backward
+"\e[B": history-search-forward
+"\e[OA": history-search-backward
+"\e[OB": history-search-forward
+C-p: history-search-backward
+C-n: history-search-forward
